@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 from typing import Optional, Tuple, List
 from aristos_cpp.map import Parser
@@ -17,7 +18,7 @@ class PlotUtils:
         """
         self._map_parser = map_parser
 
-    def get_maps(self, map_type: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray]:  
+    def _get_maps(self, map_type: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray]:  
         """
         Get the specified map type.
 
@@ -64,8 +65,9 @@ class PlotUtils:
         Tuple[int, int]
             Padding for height and width.
         """
-        pad_height = cell_dim - (height % cell_dim) if height % cell_dim != 0 else 0
-        pad_width = cell_dim - (width % cell_dim) if width % cell_dim != 0 else 0
+        # Pad is calculated as the difference between the cell dimension and the remainder of the division of the height/width by the cell dimension.
+        pad_height = (cell_dim - height % cell_dim) % cell_dim
+        pad_width = (cell_dim - width % cell_dim) % cell_dim
         return pad_height, pad_width
 
     def _plot_config(self, ax: Axes, grid_shape: Tuple[int,int], gridlines_alpha: float = 1) -> None:
@@ -113,6 +115,12 @@ class PlotUtils:
         grid = map_parser.grid_downscaled
         cell_dim = map_parser._cell_dim
         
+        # Define a custom colormap
+        colors = ['black', 'white', 'grey']  # Black for 1, White for 0, Grey for -1
+        cmap = mcolors.ListedColormap(colors)
+        bounds = [-1, 0, 1, 2]  # Define the boundaries for each color
+        norm = mcolors.BoundaryNorm(bounds, cmap.N)
+        
         grid_alpha = 1 if map_type is None else 0.5
         grid_zorder = None if draw_plot else 1
         map_alpha = 1 if draw_plot else 0.5
@@ -122,14 +130,10 @@ class PlotUtils:
         _, ax = plt.subplots()
 
         if map_type is not None:
-            image_map, pad_map = self.get_maps(map_parser, map_type)
+            image_map, pad_map = self._get_maps(map_type)
             pad_height, pad_width = self._get_padding(image_map.shape[0], image_map.shape[1], cell_dim)
             padded_image = map_parser.pad_and_expand(image_map, pad_height, pad_width, pad_map, map_parser._polygon)
             ax.imshow(padded_image==1, cmap='gray_r', extent=[0, 1, 0, 1], alpha=map_alpha, zorder=map_zorder)
-
-        grid_alpha = 1 if map_type is None else 0.5
-        grid_zorder = None if draw_plot else 1
-        map_alpha = 1 if draw_plot else 0.5
 
         ax.imshow(grid, cmap='gray_r', extent=[0, 1, 0, 1], alpha=grid_alpha, zorder=grid_zorder) 
         self._plot_config(ax, grid.shape, gridlines_alpha)
@@ -156,7 +160,7 @@ class PlotUtils:
             The Axes object with the plot.
         """
         map_parser = self._map_parser
-        image_map, pad_map = self._get_maps(map_parser, map_type)
+        image_map, pad_map = self._get_maps(map_type)
         cell_dim = map_parser._cell_dim
         grid_shape = map_parser.grid_downscaled.shape
 
@@ -192,17 +196,19 @@ class PlotUtils:
             Dimensions of the arrow.
         """
         map_parser = self._map_parser
-        ax = self._plot_grid(map_parser, map_type, draw_plot=False)
+        ax = self.plot_grid(map_type, draw_plot=False)
         
         grid_shape = map_parser.grid_downscaled.shape
+        
+        # Rescale the path to the grid shape (0,1) coordinates
         dx, dy = 1/(2*grid_shape[1]), 1/(2*grid_shape[0])
         rescaled_path = []
+        
         for (x1,y1),(x2,y2) in path:
             x1, x2 = [x/grid_shape[1] for x in (x1, x2)]
             y1, y2 = [y/grid_shape[0] for y in (y1, y2)]
             rescaled_path.append(((x1+dx,1-(y1+dy)),(x2+dx,1-(y2+dy))))
             
-        
         if cmap is not None:
             colormap = mpl.colormaps[cmap]
         else:
@@ -217,7 +223,7 @@ class PlotUtils:
 
         plt.show()
 
-    def plot_path(self, path: List[Tuple], map_type: str = 'original', cmap: Optional[str] = None, arrow_dims: Tuple[float,float] = (0.3, 0.3)) -> None:
+    def plot_map_with_path(self, path: List[Tuple], map_type: str = 'original', cmap: Optional[str] = None, arrow_dims: Tuple[float,float] = (0.3, 0.3)) -> None:
         """
         Plot the path on the map area.
 
@@ -233,7 +239,7 @@ class PlotUtils:
             Dimensions of the arrow.
         """
         map_parser = self._map_parser
-        ax = self._plot_map(map_parser, map_type, draw_plot=False)
+        ax = self.plot_map(map_type, draw_plot=False)
 
         ax.tick_params(axis='both', which='both', bottom=False, top=False, labelbottom=False, right=False, left=False, labelleft=False)
         ax.grid(False)

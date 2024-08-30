@@ -11,14 +11,14 @@ import jinja2
 import numpy as np
 import unified_planning
 import aristos_cpp
-from aristos_cpp.utilities import get_unreachable_points, patch_array
+from aristos_cpp.utilities import get_edit_unreachable_points, get_unreachable_points, patch_array, get_soft_points
 from scipy.spatial import KDTree
 from unified_planning.engines import PlanGenerationResultStatus
 from unified_planning.io import PDDLReader
 from unified_planning.shortcuts import OneshotPlanner
 
 unified_planning.shortcuts.get_environment().credits_stream = None
-
+REGEX = r"cell-(?P<x>[0-9]*)-(?P<y>[0-9]*)"
 class ProblemNotSolvable(Exception):
     """Raised when the problem is unsolvable"""
 
@@ -35,11 +35,11 @@ def parse_cell(cell) -> Tuple[int]:
 
     Returns
     -------
-        tuple: A tuple containing the parsed x and y coordinates as integers.
+    (x, y): Tuple[int]
+        A tuple containing the x and y coordinates.
     """
     cell = str(cell)
-    regex = r"cell-(?P<x>[0-9]*)-(?P<y>[0-9]*)"
-    m = re.match(regex, cell)
+    m = re.match(REGEX, cell)
     x = int(m.group('x'))
     y = int(m.group('y'))
     return (x, y)
@@ -47,24 +47,33 @@ def parse_cell(cell) -> Tuple[int]:
 class Solver():
 
     def __init__(self, grid: List[List[float]], position: List[int] = [0, 0], direction: str = 'deast', output_path: str = None, template_path: str = None) -> None:
-        """Class representing a coverage solver.
+        """
+        Represents a coverage solver.
 
         Parameters
         ----------
-            grid (List[List[float]]): The grid representing the coverage area.
-            position (List[int], optional): The starting position of the robot on the grid. Defaults to [0, 0].
-            direction (str, optional): The initial direction of the robot. Must be one of ['deast', 'dwest', 'dsouth', 'dnorth']. Defaults to 'deast'.
-            output_path (str): The path to the output directory.
-            template_path (str): The path to the Jinja template directory.
-
+        grid: List[List[float]]
+            The grid representing the environment.
+        position: List[int], optional
+            The initial position of the robot. Defaults to [0, 0].  
+        direction: str, optional
+            The initial direction of the robot. Defaults to 'dsouth'.    
+        output_path: str, optional
+            The path to save the output files. Defaults to None.    
+        template_path: str, optional
+            The path to the template files. Defaults to None.
+             
         Raises
         ------
-            ValueError: If the `direction` parameter is not recognized.
+        ValueError: If the `direction` parameter is not recognized.
         """
+        # Initialize the solver with the given grid, position, and direction
         if direction not in ['deast', 'dwest', 'dsouth', 'dnorth']:
             raise ValueError('`direction` not recognized')
         x0, y0 = position
+        self._grid_initial = get_edit_unreachable_points(np.array(grid).astype(int), ([y0, x0])).astype(bool)
         self._grid = get_unreachable_points(np.array(grid).astype(int), ([y0, x0])).astype(bool)
+        self._grid_soft = get_soft_points(np.array(grid).astype(int)).astype(bool)
         self._subgrid = np.array([])
         self._boundary = []
         self._current_pos = position
@@ -72,11 +81,12 @@ class Solver():
         self._visited = {tuple(position)}
         self._path = []
         self._turns = 0
+        self._turns_unsafe = 0
         self._counter = 0
         self._offsets = [0, 0, 0, 0] # [xwest, ynorth, xeast, ysouth]
         package_path = os.path.split(os.path.abspath(aristos_cpp.__file__))[0]
         self._template_path = template_path if template_path is not None else os.path.join(package_path, 'templates')
-        self._working_path = os.path.join(gettempdir(), 'cpp_solver', str(uuid4())) if output_path is None else os.path.join(output_path, f"{datetime.now().strftime('%Y%m%d%H%M%S')}")
+        self._working_path = os.path.join(gettempdir(), 'aristos_cpp', str(uuid4())) if output_path is None else os.path.join(output_path, f"{datetime.now().strftime('%Y%m%d%H%M%S')}")
         os.makedirs(self._working_path, exist_ok=True)
         shutil.copy2(os.path.join(self._template_path, 'domain.pddl'), os.path.join(self._working_path, 'domain.pddl'))
 
@@ -90,16 +100,18 @@ class Solver():
                 current = len(self._visited)
                 pbar.update(current - previous)
                 previous = current
-
+        print("Number of solved problems:", self._counter)
+        
     def info(self) -> Dict[str, Union[str, int]]:
         """
         Returns information about the coverage solver.
 
         Returns
         -------
-            Dict[str, Union[str, int]]: A dictionary containing the length of the path, coverage percentage, total length, and number of turns.
+        Dict[str, Union[str, int]]
+            A dictionary containing the length of the path, coverage percentage, total length, number of turns and number of unsafe turns.
         """
-        total_length = self._grid.size - np.count_nonzero(self._grid)
+        total_length = self._grid_initial.size - np.count_nonzero(self._grid_initial)
         return {'length': len(self._path), 'covered': f"{round(len(self._visited) / total_length * 100, 1)}%", 'totalLength': total_length, 'turns': self._turns}
 
     @property
@@ -116,6 +128,18 @@ class Solver():
         xmin, ymin, _, _ = self._boundary
         return patch_array(self._subgrid, self._grid, xmin, ymin)
 
+    @property
+    def grid_soft(self) -> np.ndarray:
+        """
+        Property representing the grid with soft obstacles.
+
+        Returns
+        -------
+        np.ndarray
+            The grid with soft obstacles.
+        """
+        return self._grid_soft
+    
     @property
     def direction(self) -> str:
         """
@@ -210,11 +234,15 @@ class Solver():
 
         Parameters
         ----------
-            subgrid_dim (int, optional): The dimension of the subgrid. Defaults to 5.
-
+        subgrid_dim: int, optional
+            The dimension of the subgrid. Defaults to 5.
+        offsets: Optional[List[int]], optional
+            The offsets of the grid. Defaults to None.
+            
         Returns
         -------
-            Tuple[Union[np.array, bool]]: A tuple containing the path and a flag indicating whether the coverage should continue.
+        Tuple[Union[np.array, bool]]
+            A tuple containing the path and a flag indicating whether the coverage should continue.
         """
         if offsets is not None:
             self._offsets = offsets
@@ -253,7 +281,8 @@ class Solver():
         return path, should_continue
 
     def partition(self, subgrid_dim: int=5) -> Tuple[List[int], np.ndarray]:
-        """Partitions the grid into subgrids based on the current position
+        """
+        Partitions the grid into subgrids based on the current position.
 
         Creates all possible partitions for the subsequent solution and elects
         one based on scores taking into account the current direction,
@@ -262,11 +291,13 @@ class Solver():
 
         Parameters
         ----------
-            subgrid_dim (int, optional): The dimension of the subgrid. Defaults to 5.
+        subgrid_dim: int, optional 
+            The dimension of the sub grid. Defaults to 5.
 
         Returns
         -------
-            Tuple[List[int], np.ndarray]: A tuple containing the boundaries of the selected partition and the created subgrid.
+        Tuple[List[int], np.ndarray]
+            A tuple containing the boundaries of the subgrid and the subgrid itself. 
         """
         grid = self.grid
         x0, y0 = self._current_pos
@@ -439,18 +470,22 @@ class Solver():
         return last
 
     def find_free_boundaries(self, boundaries: List[int], relaxed=False) -> Tuple[int, List[int]]:
-        """Finds the free edges within the given boundaries.
+        """
+        Finds the free edges within the given boundaries.
 
         Parameters
         ----------
-            boundaries (List[int]): The boundaries to search within.
-            relaxed (bool, optional): Flag indicating whether to perform a relaxed search.
-                In relaxed mode, visited cells are considered free, otherwise visited and
-                cells containing obstacles are considered occupied. Defaults to False.
+        boundaries : List[int] 
+            The boundaries to search within.
+        relaxed : bool, optional 
+            Flag indicating whether to perform a relaxed search.
+            In relaxed mode, visited cells are considered free, otherwise visited and
+            cells containing obstacles are considered occupied. Defaults to False.
 
         Returns
         -------
-            Tuple[Union[int, List[int]]]: A tuple containing the number of free sides and the list of free cells.
+        Tuple[Union[int, List[int]]]
+            A tuple containing the number of free sides and the list of free cells.
         """
         free_count = 0
         free = []
@@ -530,19 +565,32 @@ class Solver():
         return free_count, list(set(free))
 
     def define_problem(self, boundaries: List[int], subgrid: np.ndarray, problem_type: str='complete', free_boundaries: List[Optional[List[int]]]=[], goal: List[Optional[List[int]]]=[]):
-        """Defines the problem to be solved by the planner
+        """
+        Defines the problem to be solved by the planner.
 
         Parameters
         ----------
-            boundaries (List[int]): The boundaries of the problem.
-            subgrid (np.ndarray): The subgrid representing the problem area.
-            problem_type (str, optional): The type of the problem; one of 'complete', 'partial'. Defaults to 'complete'.
-            free_boundaries (List[Optional[List[int]]], optional): The list of free boundaries. Defaults to [].
-            goal (List[Optional[List[int]]], optional): The goal cell(s) to be reached. Defaults to [].
-
+        boundaries: List[int]
+            The boundaries of the problem, by default []
+        subgrid: np.ndarray
+            The subgrid to be covered, by default []
+        grid_soft: np.ndarray
+            The grid with soft obstacles, by default []
+        enumerate: enumerate
+            The enumerate function, by default enumerate
+        len: len
+            The len function, by default len
+        problem_type: str, optional
+            The type of the problem, by default 'complete'
+        free_boundaries: List[Optional[List[int]]], optional
+            The free boundaries which are not obstacles, by default []  
+        goal: List[Optional[List[int]]], optional
+            The goal to reach, by default [].
+            
         Returns
         -------
-            Problem: The defined problem
+        Problem: unified_planning.model.problem.Problem
+            The problem to be solved.
         """
         self._counter += 1
         xmin, ymin, xmax, ymax = boundaries
@@ -555,6 +603,7 @@ class Solver():
             direction=self.direction,
             grid=self.grid,
             subgrid=subgrid,
+            grid_soft=self.grid_soft,
             enumerate=enumerate,
             len=len,
             free_boundaries=free_boundaries,
@@ -569,7 +618,7 @@ class Solver():
 
         reader = PDDLReader()
         problem = reader.parse_problem(domain_pddl, problem_pddl)
-        problem.add_quality_metric(unified_planning.model.metrics.MinimizeActionCosts({problem.action("move"): 0, problem.action("revisit"): 5, problem.action("turn"): 10}))
+        problem.add_quality_metric(unified_planning.model.metrics.MinimizeActionCosts({problem.action("move"): 0, problem.action("revisit"): 5, problem.action("turn"): 20, problem.action("move-unsafe-vertical"): 0, problem.action("revisit-unsafe-vertical"): 5}))
         return problem
 
     def solve(self, problem, result_status=PlanGenerationResultStatus.SOLVED_OPTIMALLY):
@@ -602,14 +651,20 @@ class Solver():
             raise ProblemNotSolvable
         if len(result.plan.actions) == 0:
             raise NoActionException
+        
+        # path is a tuple of (action, cell)
         path = [(parse_cell(a.actual_parameters[0]), parse_cell(a.actual_parameters[1])) for a in result.plan.actions if not str(a).startswith('turn')]
         self._path.extend(path)
         self._result = result
+        
         for a in result.plan.actions:
+            # keep track of turns and its directions the path in the high-dimensional grid coordinate system
             if str(a).startswith('turn'):
                 self._turns += 1
                 self._direction.append(str(a.actual_parameters[-1]))
             else:
                 self._visited.add(parse_cell(a.actual_parameters[1]))
+                
+         # update current position with the last (action, cell) in the path
         self._current_pos = list(parse_cell(result.plan.actions[-1].actual_parameters[1]))
         return path

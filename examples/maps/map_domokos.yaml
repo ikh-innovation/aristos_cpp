@@ -1,0 +1,6 @@
+image: map_domokos.png 
+resolution: 0.030573394
+origin: [-232.266, -34.579, 0] # Real: -232.266, -34.579, 0
+occupied_thresh: 0.1 
+free_thresh: 0.05 
+negate: 0

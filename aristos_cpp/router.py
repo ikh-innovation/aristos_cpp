@@ -17,7 +17,7 @@ class Router:
 
     def get_dilated_padded_grid(self) -> np.ndarray:
         """
-        Expand the area of the dilated map according to the chosen cell dimension of the grid.
+        Expands the area of the dilated map according to the chosen cell dimension of the grid.
 
         Returns
         -------
@@ -30,8 +30,9 @@ class Router:
         cell_dim = map_parser._cell_dim
 
         height, width = grid_dilated.shape
-        pad_height = cell_dim - (height % cell_dim) if height % cell_dim != 0 else 0
-        pad_width = cell_dim - (width % cell_dim) if width % cell_dim != 0 else 0
+        # Pad is calculated as the difference between the cell dimension and the remainder of the division of the height/width by the cell dimension.
+        pad_height = (cell_dim - height % cell_dim) % cell_dim
+        pad_width = (cell_dim - width % cell_dim) % cell_dim
         grid_dilated_padded = map_parser.pad_and_expand(grid_dilated, pad_height, pad_width, grid_dilated_pad, map_parser._polygon)
 
         return grid_dilated_padded
@@ -54,8 +55,10 @@ class Router:
         map_parser = self._map_parser
         cell_dim = map_parser._cell_dim
         grid_dilated_padded = self.get_dilated_padded_grid()
+        # split_to_cells does a redundant pad and expand because it is already done in get_dilated_padded_grid
         cells = map_parser.split_to_cells(grid_dilated_padded)
         
+        # Rescalation is done by finding the central point of each cell and then projecting the path to the original map dimensions.
         rescaled_path = []
         for p1, p2 in path:
             

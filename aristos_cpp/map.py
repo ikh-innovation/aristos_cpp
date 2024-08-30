@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pygeos as pg
 import yaml
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 
 @dataclass
 class ImageDefs:
@@ -60,7 +60,7 @@ class Parser:
     This class is used for parsing and processing maps.
     """
     
-    def __init__(self, hard_map: str, soft_map: str, robot_config: str, cell_dim: Optional[int] = None, occupied_cell_threshold: float = 0.7, use_disc: bool = False) -> None:
+    def __init__(self, hard_map: str, soft_map: str, robot_config: str, cell_dim: Optional[int] = None, occupied_cell_threshold: float = 0.5, use_disc: bool = False) -> None:
         """
         The initializer for the Parser class.
 
@@ -80,27 +80,30 @@ class Parser:
             Flag to use a disc-shaped structuring element for dilation and erosion instead of a rectangular one.
         """
 
+        # Read the image definitions and robot definitions    
         self._obs_defs = ImageDefs.from_yaml(hard_map)
         self._soft_defs = ImageDefs.from_yaml(soft_map)
         self._robot_defs = RobotDefs.from_yaml(robot_config)
 
-
+        # Set the cell dimension and occupied cell threshold
         self._cell_dim = self.default_cell_dim if cell_dim is None else cell_dim
         self._occupied_cell_threshold = occupied_cell_threshold
         self._use_disc = use_disc
 
+        # Process the hard map only
         hard = 1*self._read(self._obs_defs)
 
+        # Perform a morphological closing operation to fill small gaps (dilation followed by erosion to close small holes inside the foreground objects)
         kernel = np.ones((50, 50), np.uint8)
         hard = cv2.morphologyEx(hard.astype('uint8'), cv2.MORPH_CLOSE, kernel)
         hard = hard.astype('int')
 
         soft = 1*self._read(self._soft_defs)
-        hard[(soft==1) & (hard!=1)] = -1
+        hard[(soft==1) & (hard!=1)] = -1 # Soft obstacles are there where hard obstacles
         
         self._grid = hard
-        self._grid_dilated = self.dilate()
-        self._grid_eroded = self.erode()
+        self._grid_dilated = self.dilate()  # dilate the grid to account for the robot's dimension
+        self._grid_eroded = self.erode() # erode the grid after dilation to account for the mower's dimension
         self._grid_downscaled = None
         self._free_cell_areas = None
         
@@ -114,23 +117,19 @@ class Parser:
 
     @property
     def grid(self) -> np.ndarray:
-        grid = self._grid if not self._selection else self._selected_grid
-        return grid
+        return self._grid if not self._selection else self._selected_grid
     
     @property
     def grid_dilated(self) -> np.ndarray:
-        grid_dilated = self._grid_dilated if not self._selection else self._selected_grid_dilated
-        return grid_dilated
+        return self._grid_dilated if not self._selection else self._selected_grid_dilated
     
     @property
     def grid_eroded(self) -> np.ndarray:
-        grid_eroded = self._grid_eroded if not self._selection else self._selected_grid_eroded
-        return grid_eroded
+        return self._grid_eroded if not self._selection else self._selected_grid_eroded
     
     @property
     def grid_downscaled(self) -> np.ndarray:
-        grid_downscaled = self._grid_downscaled if not self._selection else self._selected_grid_downscaled
-        return grid_downscaled
+       return self._grid_downscaled if not self._selection else self._selected_grid_downscaled
     
     @property
     def default_cell_dim(self) -> int:
@@ -139,40 +138,93 @@ class Parser:
         return np.ceil(mower_dim/map_resolution).astype(int)
     
     def _read(self, defs: ImageDefs) -> np.ndarray:
+        """
+        Reads the image file and returns a binary numpy array based on the thresholds defined in the image definitions.
+        
+        Parameters
+        ----------
+        defs : ImageDefs
+            The image definitions.
+        
+        Returns
+        -------
+        np.ndarray
+            The binary numpy array representing the image.
+        """
+        # Open the image file and convert it to a binary numpy array based on the thresholds
+        # where 1 represents occupied and 0 represents free. If negate is set to True, the values are inverted.
         im = ImageOps.grayscale(Image.open(defs.image))
         arr = (255 - np.array(im)) / 255.0 if not defs.negate else np.array(im) / 255.0
         im.close()
         return arr>=defs.occupied_thresh
 
-    def show(self, reverse: bool = False) -> Image.Image:
+    def show(self, map_type: str = 'original', reverse: bool = False, draw_contour: bool = False) -> Image.Image:
         """
-        Returns the grid as an Image object.
+        Returns both the total grid and the selected grid as an Image object. Requires the coverage_planner to be run first.
         
         Parameters
         ----------
+        map_type : str
+            The type of the map to show. It can be 'original', 'dilated', 'eroded', or 'downscaled'.
         reverse : bool
             If set to True, it will reverse the colors of the grid.
+        draw_contour : bool
+            If set to True, it will draw a red contour around the selected grid region.
 
         Returns
         -------
-        Image.Image
-            The Image object representing the grid.
+        Image.Image 
+            The total grid and the selected grid as an Image object.
         """
+        if map_type == 'dilated':
+            arr_total =  self._grid_dilated
+            arr_selected = self._selected_grid_dilated
+        elif map_type == 'eroded':
+            arr_total = self._grid_eroded
+            arr_selected = self._selected_grid_eroded
+        elif map_type == 'original':
+            arr_total = self._grid
+            arr_selected = self._selected_grid
+        elif map_type == 'downscaled':
+            # arr_total = self._grid_downscaled
+            arr_selected = self._selected_grid_downscaled
+        else:
+            raise ValueError(f'Invalid grid type: {map_type}')
+        
+        if not map_type == 'downscaled':
+            arr_total = arr_total.astype(np.float64)
+            arr_total[arr_total == -1] = 0.5
+            arr_total = ((1 - arr_total) * 255).astype(np.uint8) if reverse else (arr_total * 255).astype(np.uint8)
+            im_total = Image.fromarray(arr_total)
+        else: 
+            im_total = None 
+        arr_selected = arr_selected.astype(np.float64)
+        arr_selected[arr_selected == -1] = 0.5
+        arr_selected = ((1 - arr_selected) * 255).astype(np.uint8) if reverse else (arr_selected * 255).astype(np.uint8)
+        im_selected = Image.fromarray(arr_selected)
+        
+        # Draw the contour around the selected region
+        if draw_contour:
+            draw = ImageDraw.Draw(im_total)
+            
+            for i in range(len(self._polygon)):
+                draw.line([tuple(self._polygon[i]), tuple(self._polygon[(i+1) % len(self._polygon)])], fill= 128, width=15)
 
-        arr = 1.*self.grid
-        arr[arr==-1] = 0.5
-        arr = ((1 - arr)*255).astype(np.uint8) if reverse else (arr*255).astype(np.uint8)
-        im = Image.fromarray(arr)
-        return im
+        return im_total, im_selected
 
     def pixel_to_meter(self, coordinates: Tuple[int]) -> Tuple[float]:
-        """Converts a pair of coordinates from pixel to meters
+        """
+        Converts a pair of coordinates from pixel to meters.
 
-        Args:
-            coordinates (Tuple[int]): Pair of x, y coordinates
-
-        Returns:
-            Tuple[float]: C
+        Parameters
+        ----------
+        coordinates : Tuple[int]
+            The coordinates in pixels.
+        
+        Returns
+        ------- 
+        Tuple[float]
+            The coordinates in meters.
         """
         resolution = self._obs_defs.resolution
         x0, y0, _ = self._obs_defs.origin
@@ -180,20 +232,37 @@ class Parser:
         return (x*resolution + x0, y*resolution + y0)
 
     def meter_to_pixel(self, coordinates: Tuple[float]) -> Tuple[int]:
+        """
+        Converts a pair of coordinates from meters to pixels.
+        
+        Parameters
+        ----------
+        coordinates : Tuple[float]
+            The coordinates in meters.
+        
+        Returns
+        -------
+        Tuple[int]
+            The coordinates in pixels.
+        """
         resolution = self._obs_defs.resolution
         x0, y0, _ = self._obs_defs.origin
         x, y = coordinates
         return (round((x - x0) / resolution), round((y - y0) / resolution))
 
     def _reverse_polygon(self, polygon: Union[np.ndarray, list]) -> np.ndarray:
-        """Reverse y coordinates of a polygon so that axis origin is upper left
+        """
+        Reverse y coordinates of a polygon so that axis origin is upper left.
 
-        Args:
-            polygon Union[np.ndarray, list]
-                Coordinates of a polygon
-
-        Returns:
-            np.ndarray: The reverted polygon
+        Parameters
+        ----------
+        polygon : Union[np.ndarray, list]
+            The vertices of the polygon that defines the region to select. Can be either a list or a numpy array.
+        
+        Returns
+        -------
+        np.ndarray
+            The reversed polygon.
         """
         maxy, _ = self._grid.shape
         reversed = np.array([[c[0], max(0, maxy - c[1])] for c in polygon])
@@ -207,6 +276,14 @@ class Parser:
         ----------
         polygon : Union[np.ndarray, list]
             The vertices of the polygon that defines the region to select. Can be either a list or a numpy array.
+        unit : str
+            The unit of the polygon. It can be 'meter' or 'pixel'. If 'meter', the coordinates of the polygon are in meters.
+
+        Raises
+        ------
+        ValueError
+            If the unit is not 'meter' or 'pixel'.
+            If the polygon is out of the map boundaries.
         """
 
         def select_grid(grid, polygon: np.ndarray):      
@@ -235,7 +312,9 @@ class Parser:
         self._selected_grid_eroded = select_grid(self._grid_eroded, polygon) 
         self._selection = True
         self._polygon = polygon
-        self.downscale_grid()
+        
+        self._selected_grid_downscaled = self.downscale_grid()
+        self.show(map_type='downscaled', reverse=True)
 
     def dilate(self) -> np.ndarray:
         """
@@ -263,12 +342,12 @@ class Parser:
         non_hard = np.where((dilated_binary == 0) & (soft == 1))
         dilated_grid = dilated_binary.copy().astype(np.int64)
         dilated_grid[non_hard[0], non_hard[1]] = -1
-
+                            
         return dilated_grid
     
     def erode(self) -> np.ndarray:
         """
-        Performs an erosion operation on the grid based on the robot's dimension.
+        Performs an erosion operation on the grid based on the mowers's dimension.
 
         Returns
         -------
@@ -361,16 +440,17 @@ class Parser:
         np.ndarray
             The split grid as a numpy array.
         """
-
+        # Pad the grid if needed when splitting because the grid should be divisible by the cell dimension
         height, width = grid.shape
-        pad_height = self._cell_dim - (height % self._cell_dim) if height % self._cell_dim != 0 else 0
-        pad_width = self._cell_dim - (width % self._cell_dim) if width % self._cell_dim != 0 else 0
+        pad_height = (self._cell_dim - height % self._cell_dim) % self._cell_dim
+        pad_width = (self._cell_dim - width % self._cell_dim) % self._cell_dim
         
         if grid_pad is None:
             padded_image = self.pad_and_expand(grid, pad_height, pad_width)
         else:
             padded_image = self.pad_and_expand(grid, pad_height, pad_width, grid_pad, polygon)
 
+        # Split the padded grid into cells 
         padded_height, _ = padded_image.shape
         cells = padded_image.reshape(padded_height//self._cell_dim, self._cell_dim, -1, self._cell_dim).swapaxes(1,2)
         
@@ -389,13 +469,26 @@ class Parser:
         if occupied_cell_threshold is None:
             occupied_cell_threshold = self._occupied_cell_threshold
 
+        # Split the dilated grid into cells 
         dilated_cells = self.split_to_cells(self.grid_dilated, self._grid_dilated, self._polygon)
-
+        
+        # Replace each cell with a single value based on the percentage of occupied pixels in the cell
         cell_obstacle_count = np.count_nonzero(dilated_cells==1, axis=(2,3))
         cell_obstacle_perc = cell_obstacle_count / self._cell_dim**2
         downscaled_grid = (cell_obstacle_perc > occupied_cell_threshold)
 
-        if self._selection:
-            self._selected_grid_downscaled = downscaled_grid
-        else:
-            self._grid_downscaled = downscaled_grid
+        # replace boolean values with 1 and 0
+        downscaled_grid = downscaled_grid.astype(np.int64)
+        
+        # Now we have only occupied and free cells, we need to replace some cells with soft obstacles
+        # if the percentage of soft obstacles in the cell is greater than the threshold then the cell is considered as a soft obstacle
+        soft_cell_threshold = 0.05
+        cell_soft_count = np.count_nonzero(dilated_cells==-1, axis=(2,3))
+        cell_soft_perc = cell_soft_count / self._cell_dim**2
+        downscaled_grid[cell_soft_perc > soft_cell_threshold] = -1
+        
+        # print number of -1 values
+        print(f"Number of soft cells: {np.count_nonzero(downscaled_grid == -1)}")
+        # print(f"Number of occupied cells: {np.count_nonzero(downscaled_grid == 1)}")
+        
+        return downscaled_grid

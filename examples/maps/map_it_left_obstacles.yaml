@@ -1,0 +1,8 @@
+image: map_it_left_obstacles.png
+image_resolution: [10330, 8335]
+occupied_thresh: 0.005
+free_thresh: 0.004
+origin: [-358.21880999999996, -293.89059, 0]
+origin_pixel: [6261, 3688]
+resolution: 0.05517
+negate: 0

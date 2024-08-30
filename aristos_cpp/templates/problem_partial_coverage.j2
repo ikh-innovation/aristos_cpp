@@ -23,24 +23,27 @@
     (perpendicular deast dsouth)
     {%- for x in range(xmin, xmax) %}
       {%- for y in range(ymin, ymax) %}
+        {%- if grid_soft[y][x] %}
+          (unsafe cell-{{x}}-{{y}})
+        {%- endif %}
         {%- if x - 1 >= xmin %}
           {%- if not grid[y][x] and not grid[y][x-1] %}
-    (west cell-{{x}}-{{y}} cell-{{x-1}}-{{y}} dwest)
+            (west cell-{{x}}-{{y}} cell-{{x-1}}-{{y}} dwest)
           {%- endif %}
         {%- endif %}
         {%- if x + 1 < xmax  %}
           {%- if not grid[y][x] and not grid[y][x+1] %}
-    (east cell-{{x}}-{{y}} cell-{{x+1}}-{{y}} deast)
+            (east cell-{{x}}-{{y}} cell-{{x+1}}-{{y}} deast)
           {%- endif %}
         {%- endif %}
         {%- if y - 1 >= ymin %}
           {%- if not grid[y][x] and not grid[y-1][x] %}
-    (north cell-{{x}}-{{y}} cell-{{x}}-{{y-1}} dnorth)
+            (north cell-{{x}}-{{y}} cell-{{x}}-{{y-1}} dnorth)
           {%- endif %}
         {%- endif%}
         {%- if y + 1 < ymax %}
           {%- if not grid[y][x] and not grid[y+1][x] %}
-    (south cell-{{x}}-{{y}} cell-{{x}}-{{y+1}} dsouth)
+            (south cell-{{x}}-{{y}} cell-{{x}}-{{y+1}} dsouth)
           {%- endif %}
         {%- endif %}
       {%- endfor %}
@@ -52,7 +55,7 @@
     {%- if len(free_boundaries) > 0 %}
       (or 
         {%- for point in free_boundaries %}
-        (at cell-{{point[0]}}-{{point[1]}})
+          (at cell-{{point[0]}}-{{point[1]}})
         {%- endfor %}
       )
     {%- endif %}
